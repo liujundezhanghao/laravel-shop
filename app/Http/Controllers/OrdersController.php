@@ -6,6 +6,7 @@ use App\Events\OrderReviewed;
 use App\Exceptions\CouponCodeUnavailableException;
 use App\Exceptions\InvalidRequestException;
 use App\Http\Requests\ApplyRefundRequest;
+use App\Http\Requests\CrowdFundingOrderRequest;
 use App\Http\Requests\OrderRequest;
 use App\Http\Requests\SendReviewRequest;
 use App\Jobs\CloseOrder;
@@ -56,6 +57,7 @@ class OrdersController extends Controller
      */
     public function show(Order $order, Request $request)
     {
+
         $this->authorize('own', $order);
         return view('orders.show', ['order' => $order->load(['items.productSku', 'items.product'])]);
     }
@@ -118,9 +120,12 @@ class OrdersController extends Controller
     public function applyRefund(Order $order, ApplyRefundRequest $request)
     {
         $this->authorize('own', $order);
-
         if (!$order->paid_at) {
-            throw new InvalidRequestException('该订单未支付,不可退款');
+            throw new InvalidRequestException('该订单未支付，不可退款');
+        }
+        // 众筹订单不允许申请退款
+        if ($order->type === Order::TYPE_CROWDFUNDING) {
+            throw new InvalidRequestException('众筹订单不支持退款');
         }
 
         if ($order->refund_status !== Order::REFUND_STATUS_PENDING) {
@@ -136,5 +141,16 @@ class OrdersController extends Controller
         ]);
 
         return $order;
+    }
+
+    // 创建一个新的方法用于接受众筹商品下单请求
+    public function crowdfunding(CrowdFundingOrderRequest $request, OrderService $orderService)
+    {
+        $user    = $request->user();
+        $sku     = ProductSku::find($request->input('sku_id'));
+        $address = UserAddress::find($request->input('address_id'));
+        $amount  = $request->input('amount');
+
+        return $orderService->crowdfunding($user, $address, $sku, $amount);
     }
 }

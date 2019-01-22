@@ -4,10 +4,12 @@ namespace App\Http\Controllers;
 
 use App\Events\OrderPaid;
 use App\Exceptions\InvalidRequestException;
+use App\Models\Installment;
 use App\Models\Order;
 use Carbon\Carbon;
 use Endroid\QrCode\QrCode;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 class PaymentController extends Controller
 {
@@ -36,13 +38,14 @@ class PaymentController extends Controller
 
         return view('pages.success', ['msg' => '付款成功']);
     }
+
     public function alipayNotify()
     {
         // 校验输入参数
-        $data  = app('alipay')->verify();
+        $data = app('alipay')->verify();
         // 如果订单状态不是成功或者结束，则不走后续的逻辑
         // 所有交易状态：https://docs.open.alipay.com/59/103672
-        if(!in_array($data->trade_status, ['TRADE_SUCCESS', 'TRADE_FINISHED'])) {
+        if (!in_array($data->trade_status, ['TRADE_SUCCESS', 'TRADE_FINISHED'])) {
             return app('alipay')->success();
         }
         // $data->out_trade_no 拿到订单流水号，并在数据库中查询
@@ -58,9 +61,9 @@ class PaymentController extends Controller
         }
 
         $order->update([
-            'paid_at'        => Carbon::now(), // 支付时间
+            'paid_at' => Carbon::now(), // 支付时间
             'payment_method' => 'alipay', // 支付方式
-            'payment_no'     => $data->trade_no, // 支付宝订单号
+            'payment_no' => $data->trade_no, // 支付宝订单号
         ]);
         $this->afterPaid($order);
 
@@ -77,8 +80,8 @@ class PaymentController extends Controller
         // 之前是直接返回，现在把返回值放到一个变量里
         $wechatOrder = app('wechat_pay')->scan([
             'out_trade_no' => $order->no,
-            'total_fee'    => $order->total_amount * 100,
-            'body'         => '支付 Laravel Shop 的订单：'.$order->no,
+            'total_fee' => $order->total_amount * 100,
+            'body' => '支付 Laravel Shop 的订单：' . $order->no,
         ]);
         // 把要转换的字符串作为 QrCode 的构造函数参数
         $qrCode = new QrCode($wechatOrder->code_url);
@@ -90,7 +93,7 @@ class PaymentController extends Controller
     public function wechatNotify()
     {
         // 校验回调参数是否正确
-        $data  = app('wechat_pay')->verify();
+        $data = app('wechat_pay')->verify();
         // 找到对应的订单
         $order = Order::where('no', $data->out_trade_no)->first();
         // 订单不存在则告知微信支付
@@ -105,9 +108,9 @@ class PaymentController extends Controller
 
         // 将订单标记为已支付
         $order->update([
-            'paid_at'        => Carbon::now(),
+            'paid_at' => Carbon::now(),
             'payment_method' => 'wechat',
-            'payment_no'     => $data->transaction_id,
+            'payment_no' => $data->transaction_id,
         ]);
         $this->afterPaid($order);
         return app('wechat_pay')->success();
@@ -116,5 +119,63 @@ class PaymentController extends Controller
     protected function afterPaid(Order $order)
     {
         event(new OrderPaid($order));
+    }
+
+    public function payByInstallment(Order $order, Request $request)
+    {
+        $this->authorize('own', $order);
+
+        if ($order->paid_at || $order->closed) {
+            throw new InvalidRequestException('订单状态不正确');
+        }
+
+        $this->validate($request, [
+            'count' => ['required', Rule::in(array_keys(config('app.installment_fee_rate')))],
+        ]);
+
+        Installment::query()
+            ->where('order_id', $order->id)
+            ->where('status', Installment::STATUS_PENDING)
+            ->delete();
+
+        $count = $request->input('count');
+
+        $installment = new Installment([
+            'total_amount' => $order->total_amount,
+            'count' => $count,
+            // 从配置文件中读取相应期数的费率
+            'fee_rate' => config('app.installment_fee_rate')[$count],
+            // 从配置文件中读取当期逾期费率
+            'fine_rate' => config('app.installment_fine_rate'),
+        ]);
+
+        $installment->user()->associate($request->user());
+        $installment->order()->associate($order);
+        $installment->save();
+
+        $dueDate = Carbon::tomorrow();
+
+        $base = big_number($order->total_amount)->divide($count)->getValue();
+        $fee = big_number($base)->multiply($installment->fee_rate)->divide(100)->getValue();
+
+        for($i = 0; $i < $count; $i++) {
+            if($i === $count - 1) {
+                $base = big_number($order->total_amount)->subtract(big_number($base)->multiply($count-1));
+
+            }
+
+            $installment->items()->create([
+                'sequence' => $i,
+                'base' => $base,
+                'fee' => $fee,
+                'due_date' => $dueDate,
+            ]);
+
+            $dueDate = $dueDate->copy()->addDays(30);
+        }
+
+        return $installment;
+
+
     }
 }
