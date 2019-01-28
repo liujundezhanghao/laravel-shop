@@ -129,6 +129,10 @@ class PaymentController extends Controller
             throw new InvalidRequestException('订单状态不正确');
         }
 
+        if ($order->total_amount < config('app.min_installment_amount')) {
+            throw new InvalidRequestException('订单金额低于最低分期金额');
+        }
+
         $this->validate($request, [
             'count' => ['required', Rule::in(array_keys(config('app.installment_fee_rate')))],
         ]);
