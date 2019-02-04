@@ -5,13 +5,7 @@ Route::post('payment/wechat/notify', 'PaymentController@wechatNotify')->name('pa
 Route::post('payment/wechat/refund_notify', 'PaymentController@wechatRefundNotify')->name('payment.wechat.refund_notify');
 Route::redirect('/', '/products')->name('root');
 Route::get('products', 'ProductsController@index')->name('products.index');
-Route::get('alipay', function() {
-    return app('alipay')->web([
-        'out_trade_no' => time(),
-        'total_amount' => '1',
-        'subject' => 'test subject - 测试',
-    ]);
-});
+
 // 在之前的路由里加上一个 verify 参数
 Auth::routes(['verify' => true]);
 // auth 中间件代表需要登录，verified中间件代表需要经过邮箱验证
